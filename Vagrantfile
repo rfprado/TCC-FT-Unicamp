@@ -74,7 +74,45 @@ Vagrant.configure("2") do |config|
       vb.cpus = 1
     end
   end
+  
+  # Configuração do Nó RAID: linux-raid
+  config.vm.define "linux-raid" do |node|
+    node.vm.box = box_image
+    node.vm.hostname = "linux-raid"    
+    node.vm.network "private_network", ip: "192.168.56.30"
+    node.vm.provider "virtualbox" do |vb|
+      vb.name = "linux-raid"
+      vb.memory = 3072
+      vb.cpus = 2   
+      vb.customize ['createhd', '--filename', 'linux-raid_disk2.vdi', '--size', '10240'] unless File.exist?('linux-raid_disk2.vdi')
+      vb.customize ['createhd', '--filename', 'linux-raid_disk3.vdi', '--size', '10240'] unless File.exist?('linux-raid_disk3.vdi')
+      vb.customize ['createhd', '--filename', 'linux-raid_disk4.vdi', '--size', '10240'] unless File.exist?('linux-raid_disk4.vdi')
+      vb.customize ['createhd', '--filename', 'linux-raid_disk5.vdi', '--size', '10240'] unless File.exist?('linux-raid_disk5.vdi')
+      vb.customize ['createhd', '--filename', 'linux-raid_disk6.vdi', '--size', '10240'] unless File.exist?('linux-raid_disk6.vdi')
+      vb.customize ['storageattach', :id, '--storagectl', 'SATA Controller', '--port', '1', '--device', '0', '--type', 'hdd', '--medium', 'linux-raid_disk2.vdi']
+      vb.customize ['storageattach', :id, '--storagectl', 'SATA Controller', '--port', '2', '--device', '0', '--type', 'hdd', '--medium', 'linux-raid_disk3.vdi']
+      vb.customize ['storageattach', :id, '--storagectl', 'SATA Controller', '--port', '3', '--device', '0', '--type', 'hdd', '--medium', 'linux-raid_disk4.vdi']
+      vb.customize ['storageattach', :id, '--storagectl', 'SATA Controller', '--port', '4', '--device', '0', '--type', 'hdd', '--medium', 'linux-raid_disk5.vdi']
+      vb.customize ['storageattach', :id, '--storagectl', 'SATA Controller', '--port', '5', '--device', '0', '--type', 'hdd', '--medium', 'linux-raid_disk6.vdi']
+    end
+  
+  # Provisionamento específico para copiar arquivos do ceph-node02 para o linux-raid
+    node.vm.provision "shell", inline: <<-SHELL
+      echo "==> A instalar dependências para transferência SSH..."
+      dnf install -y sshpass
 
+      echo "==> A copiar /etc/ssh/sshd_config do ceph-node02 (192.168.56.11)..."
+      sshpass -p 'vagrant' scp -o StrictHostKeyChecking=no root@192.168.56.11:/etc/ssh/sshd_config /etc/ssh/sshd_config
+
+      echo "==> A copiar authorized_keys do ceph-node02..."
+      mkdir -p /root/.ssh
+      sshpass -p 'vagrant' scp -o StrictHostKeyChecking=no root@192.168.56.11:/root/.ssh/authorized_keys /root/.ssh/authorized_keys
+      
+      chmod 700 /root/.ssh
+      chmod 600 /root/.ssh/authorized_keys
+      systemctl restart sshd
+    SHELL
+    end 
   # Provisionamento Geral, Comum e Básico para Todos os Nós (Hosts, NTP, Ferramentas)
   config.vm.provision "shell", inline: <<-SHELL
     # 1. Configurar /etc/hosts
@@ -83,6 +121,7 @@ Vagrant.configure("2") do |config|
 192.168.56.11 ceph-node02
 192.168.56.12 ceph-node03
 192.168.56.20 ceph-client
+192.168.56.30 linux-raid
 EOF
 
     # 2. Atualizar o sistema e instalar dependências compatíveis com RHEL/Rocky Linux (DNF)
@@ -93,7 +132,7 @@ EOF
     systemctl start chronyd && systemctl enable --now chronyd && chronyc tracking
   SHELL
   
-  # 2. Provisionamento Exclusivo do ceph-node01: Geração e Distribuição de Chaves SSH
+  # CEPH-NODE01: Provisionamento Exclusivo do ceph-node01: Geração e Distribuição de Chaves SSH
   config.vm.provision "shell", inline: <<-SHELL
     if [ "$(hostname)" = "ceph-node01" ]; then
       echo "==> Configurando o acesso SSH sem senha no ceph-node01..."
@@ -107,12 +146,11 @@ EOF
       dnf install -y sshpass
       
       # Ajuste de permissões do /etc/ssh/sshd, permitindo login como root
-      sed -i 's/#PermissiveRootLogin yes/PermitRootLogin yes/' /etc/ssh/sshd_config
-      sed -i 's/PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config
-      systemctl restart sshd
+      sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
+	  systemctl restart sshd
 
       # Aqui iniciamos a distribuição da chave pública para todos os nós (incluindo ele próprio e o client)
-      for host in ceph-node01 ceph-node02 ceph-node03 ceph-client; do
+      for host in ceph-node01 ceph-node02 ceph-node03 ceph-client linux-raid; do
         echo "Copiando chave para $host..."
         ssh-keyscan -H $host >> /root/.ssh/known_hosts
         sshpass -p 'vagrant' ssh-copy-id -o StrictHostKeyChecking=no root@$host
